@@ -2,7 +2,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from app.config import get_settings
-from app.schemas import FetchUrlResult
+from app.schemas import ExtractArticleResult, FetchUrlResult
+from app.services.article_extractor import extract_article_content
 from app.services.extractor import extract_readable_content, truncate_text
 from app.services.fetcher import FetchError, fetch_url_content
 
@@ -10,6 +11,12 @@ FETCH_URL_DESCRIPTION = (
     "Fetch a public webpage URL and return cleaned readable text, title, final URL, "
     "status code and basic metadata. Use this when the user wants to read, summarize "
     "or inspect a webpage."
+)
+
+EXTRACT_ARTICLE_DESCRIPTION = (
+    "Fetch a public webpage and extract clean, readable article content with rich "
+    "metadata. Prefer this over fetch_url when you need higher quality article text "
+    "for summarization, blog posts, news, or long-form pages."
 )
 
 
@@ -62,6 +69,23 @@ def create_mcp_server() -> FastMCP:
             text=text,
             truncated=truncated,
             char_count=len(text),
+        )
+
+    @mcp.tool(
+        name="extract_article",
+        description=EXTRACT_ARTICLE_DESCRIPTION,
+        structured_output=True,
+    )
+    async def extract_article(
+        url: str,
+        max_chars: int | None = 20000,
+        include_metadata: bool = True,
+    ) -> ExtractArticleResult:
+        return await extract_article_content(
+            url=url,
+            max_chars=max_chars,
+            include_metadata=include_metadata,
+            settings=settings,
         )
 
     return mcp

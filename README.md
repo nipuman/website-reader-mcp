@@ -1,6 +1,6 @@
 # Website Reader MCP
 
-A small production-ready [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server built with Python and FastAPI. It exposes a **Website Reader** tool over **Streamable HTTP** so an AI chat backend can fetch public webpages and receive cleaned, readable text.
+A small production-ready [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server built with Python and FastAPI. It exposes **Website Reader** tools over **Streamable HTTP** so an AI chat backend can fetch public webpages and receive cleaned, readable text.
 
 ## What it does
 
@@ -9,6 +9,16 @@ A small production-ready [Model Context Protocol (MCP)](https://modelcontextprot
 - Exposes MCP at `/mcp` (Streamable HTTP transport)
 - Protects the MCP endpoint with a static API key
 - Provides the `fetch_url` tool to fetch a public page and return structured metadata plus cleaned text
+- Provides the `extract_article` tool to extract higher quality article content with rich metadata
+
+## Tools: `fetch_url` vs `extract_article`
+
+| Tool | Best for | Output |
+| --- | --- | --- |
+| `fetch_url` | Raw/simple fetch when you also need HTTP status, final URL, and content type | Cleaned page text plus basic title/description from HTML |
+| `extract_article` | Summaries, blog posts, news, docs, and long-form pages | Article-focused text extracted with `trafilatura`, plus author, date, site name, language, and related metadata |
+
+Use `extract_article` when you want the main readable article body. Use `fetch_url` when you need fetch diagnostics or a simpler HTML-to-text pass.
 
 ## Local setup
 
@@ -192,6 +202,57 @@ curl -k -sS -X POST "https://localhost:8001/mcp/" \
 
 Replace `change-me` with your configured `MCP_API_KEY`.
 
+### Call `extract_article`
+
+```bash
+curl -k -sS -X POST "https://localhost:8001/mcp/" \
+  -H "Authorization: Bearer change-me" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tools/call",
+    "params": {
+      "name": "extract_article",
+      "arguments": {
+        "url": "https://example.com/blog/my-article",
+        "max_chars": 12000,
+        "include_metadata": true
+      }
+    }
+  }'
+```
+
+Example structured output:
+
+```json
+{
+  "url": "https://example.com/blog/my-article",
+  "title": "My Article",
+  "author": null,
+  "date": null,
+  "description": "Short article description",
+  "site_name": "Example",
+  "language": "en",
+  "text": "Clean readable article text...",
+  "text_length": 8452,
+  "truncated": false,
+  "extraction_method": "trafilatura"
+}
+```
+
+If extraction fails, the tool returns a structured error instead of crashing:
+
+```json
+{
+  "url": "https://example.com/article",
+  "error": "Could not extract readable article content from this page.",
+  "text": null,
+  "extraction_method": "trafilatura"
+}
+```
+
 You can also connect with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector) using Streamable HTTP transport, the HTTPS URL above, and the same API key. You may need to accept the self-signed certificate in your client.
 
 ## Tests
@@ -240,20 +301,21 @@ app/
     website_reader.py  MCP tool registration
   services/
     fetcher.py         HTTP fetch + URL validation
-    extractor.py       HTML to readable text
+    extractor.py       HTML to readable text (BeautifulSoup, used by fetch_url)
+    article_extractor.py  Article extraction with trafilatura
 scripts/
   generate_dev_certs.sh  Create local self-signed TLS certs
   dev.sh                 Run uvicorn with HTTPS locally
 tests/
   test_fetcher.py
   test_extractor.py
+  test_extract_article.py
 ```
 
 ## Next steps
 
 Possible follow-ups:
 
-- add `extract_article` with better readability extraction
 - add `fetch_markdown`
 - add domain allowlist or blocklist
 - add caching
