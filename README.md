@@ -4,15 +4,15 @@ A small production-ready [Model Context Protocol (MCP)](https://modelcontextprot
 
 ## What it does
 
-- Runs as a FastAPI app locally with uvicorn
-- Deploys to Vercel as a Python serverless app
+- Runs as a FastAPI app locally with uvicorn over HTTPS
+- Deploys to Vercel as a Python serverless app (HTTPS provided by Vercel)
 - Exposes MCP at `/mcp` (Streamable HTTP transport)
 - Protects the MCP endpoint with a static API key
 - Provides the `fetch_url` tool to fetch a public page and return structured metadata plus cleaned text
 
 ## Local setup
 
-Requirements: Python 3.11+
+Requirements: Python 3.11+ and OpenSSL (for local dev certs)
 
 ```bash
 python -m venv .venv
@@ -34,20 +34,77 @@ REQUEST_TIMEOUT_SECONDS=12
 MAX_RESPONSE_CHARS=12000
 MAX_HTML_BYTES=2000000
 ALLOWED_SCHEMES=https,http
+
+HOST=0.0.0.0
+PORT=8001
+DEV_HTTPS=true
+SSL_CERTFILE=certs/localhost.pem
+SSL_KEYFILE=certs/localhost-key.pem
 ```
 
 The real `.env` file is gitignored and should not be committed.
 
+## Create local HTTPS certs
+
+Local development uses self-signed TLS certs. Generate them once:
+
+```bash
+chmod +x scripts/dev.sh scripts/generate_dev_certs.sh
+./scripts/generate_dev_certs.sh
+```
+
+This creates:
+
+```text
+certs/localhost.pem
+certs/localhost-key.pem
+```
+
+These files are gitignored and are for local dev only.
+
+You do not need to run this manually if you use `./scripts/dev.sh` — it auto-generates missing certs on first start.
+
+### Optional: trusted local certs with mkcert
+
+If you prefer browser- and client-trusted local certs instead of self-signed ones:
+
+```bash
+brew install mkcert
+mkcert -install
+mkdir -p certs
+mkcert -cert-file certs/localhost.pem -key-file certs/localhost-key.pem localhost 127.0.0.1
+```
+
+Then use `./scripts/dev.sh` as usual.
+
 ## Run locally
 
 ```bash
-uvicorn app.main:app --reload --port 8001
+./scripts/dev.sh
+```
+
+This starts uvicorn with reload on:
+
+```text
+https://localhost:8001
+```
+
+Useful overrides:
+
+```bash
+# HTTP instead of HTTPS
+DEV_HTTPS=false ./scripts/dev.sh
+
+# Bind only to localhost
+HOST=127.0.0.1 ./scripts/dev.sh
 ```
 
 ## Health check
 
+Self-signed certs require `-k` with curl:
+
 ```bash
-curl http://127.0.0.1:8001/health
+curl -k https://localhost:8001/health
 ```
 
 Example response:
@@ -64,7 +121,7 @@ Example response:
 The MCP Streamable HTTP endpoint is:
 
 ```text
-http://127.0.0.1:8001/mcp
+https://localhost:8001/mcp
 ```
 
 Authentication is required. Use either header:
@@ -84,7 +141,7 @@ X-API-Key: <MCP_API_KEY>
 Initialize a session (stateless mode):
 
 ```bash
-curl -sS -X POST "http://127.0.0.1:8001/mcp" \
+curl -k -sS -X POST "https://localhost:8001/mcp/" \
   -H "Authorization: Bearer change-me" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -103,7 +160,7 @@ curl -sS -X POST "http://127.0.0.1:8001/mcp" \
 List tools:
 
 ```bash
-curl -sS -X POST "http://127.0.0.1:8001/mcp" \
+curl -k -sS -X POST "https://localhost:8001/mcp/" \
   -H "Authorization: Bearer change-me" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -118,7 +175,7 @@ curl -sS -X POST "http://127.0.0.1:8001/mcp" \
 Call `fetch_url`:
 
 ```bash
-curl -sS -X POST "http://127.0.0.1:8001/mcp" \
+curl -k -sS -X POST "https://localhost:8001/mcp/" \
   -H "Authorization: Bearer change-me" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -135,7 +192,7 @@ curl -sS -X POST "http://127.0.0.1:8001/mcp" \
 
 Replace `change-me` with your configured `MCP_API_KEY`.
 
-You can also connect with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector) using Streamable HTTP transport and the same URL and API key.
+You can also connect with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector) using Streamable HTTP transport, the HTTPS URL above, and the same API key. You may need to accept the self-signed certificate in your client.
 
 ## Tests
 
@@ -150,7 +207,7 @@ pytest
 3. Set environment variables in the Vercel dashboard (at minimum `MCP_API_KEY`).
 4. Deploy.
 
-The included `vercel.json` routes all requests to `app/main.py`, which exports the ASGI `app` object required by `@vercel/python`.
+The included `vercel.json` routes all requests to `app/main.py`, which exports the ASGI `app` object required by `@vercel/python`. Vercel terminates HTTPS for you in production; the local cert files are not used there.
 
 After deployment, your MCP endpoint will be:
 
@@ -163,6 +220,7 @@ Use the same API key headers as in local development.
 ## Security notes and limitations
 
 - The MCP endpoint is protected by a single static API key. Rotate the key if it is exposed.
+- Local HTTPS uses self-signed certificates. Do not reuse them outside local development.
 - SSRF protection blocks localhost, common internal hostnames, and private/link-local/multicast IP literals before fetching.
 - DNS resolution is **not** yet validated against resolved private IPs (see TODO in `app/services/fetcher.py`).
 - Only `http` and `https` URLs are allowed.
@@ -183,6 +241,9 @@ app/
   services/
     fetcher.py         HTTP fetch + URL validation
     extractor.py       HTML to readable text
+scripts/
+  generate_dev_certs.sh  Create local self-signed TLS certs
+  dev.sh                 Run uvicorn with HTTPS locally
 tests/
   test_fetcher.py
   test_extractor.py
