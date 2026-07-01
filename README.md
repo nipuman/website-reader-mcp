@@ -8,17 +8,25 @@ A small production-ready [Model Context Protocol (MCP)](https://modelcontextprot
 - Deploys to Vercel as a Python serverless app (HTTPS provided by Vercel)
 - Exposes MCP at `/mcp` (Streamable HTTP transport)
 - Protects the MCP endpoint with a static API key
-- Provides the `fetch_url` tool to fetch a public page and return structured metadata plus cleaned text
-- Provides the `extract_article` tool to extract higher quality article content with rich metadata
+- Provides a small content extraction pipeline: raw fetch, Markdown, article extraction, metadata and summary preparation
 
-## Tools: `fetch_url` vs `extract_article`
+## Tools
+
+The server exposes five MCP tools so the AI Chat backend can pick the right extraction layer for the task:
 
 | Tool | Best for | Output |
 | --- | --- | --- |
-| `fetch_url` | Raw/simple fetch when you also need HTTP status, final URL, and content type | Cleaned page text plus basic title/description from HTML |
-| `extract_article` | Summaries, blog posts, news, docs, and long-form pages | Article-focused text extracted with `trafilatura`, plus author, date, site name, language, and related metadata |
+| `fetch_url` | Raw/simple fetch for debugging or fallback when you also need HTTP status, final URL and content type | Cleaned page text plus basic title/description from HTML |
+| `fetch_markdown` | RAG ingestion and LLM context | Clean, LLM-friendly Markdown with headings, paragraphs, links, lists and code blocks; boilerplate removed |
+| `extract_article` | Summaries, blog posts, news, docs and long-form pages | Main article text **and** Markdown, plus author, published date, description, site name and language |
+| `extract_metadata` | Link previews and routing | Title, description, author, published date, site name, language, image and canonical URL (Open Graph, Twitter card, JSON-LD, meta tags) |
+| `summarize_article` | Preparing an article summary without coupling the server to an LLM | Article text plus a ready-to-use `summary_prompt` the chat backend passes to its own model |
 
-Use `extract_article` when you want the main readable article body. Use `fetch_url` when you need fetch diagnostics or a simpler HTML-to-text pass.
+Markdown and article extraction are powered by [`trafilatura`](https://trafilatura.readthedocs.io/), with a lightweight BeautifulSoup fallback when trafilatura cannot find usable content. All tools return **structured error messages** instead of crashing on invalid URLs, timeouts, unsupported content types, empty pages or extraction failures.
+
+### `summarize_article` and LLMs
+
+`summarize_article` deliberately does **not** call OpenAI or any other model from inside the MCP server. It returns the extracted `text` together with a `summary_prompt` string. The AI Chat backend can send `summary_prompt` to its existing model pipeline to produce the actual summary. This keeps the MCP server provider-agnostic.
 
 ## Local setup
 
@@ -202,7 +210,7 @@ curl -k -sS -X POST "https://localhost:8001/mcp/" \
 
 Replace `change-me` with your configured `MCP_API_KEY`.
 
-### Call `extract_article`
+### Call `fetch_markdown`
 
 ```bash
 curl -k -sS -X POST "https://localhost:8001/mcp/" \
@@ -214,11 +222,10 @@ curl -k -sS -X POST "https://localhost:8001/mcp/" \
     "id": 4,
     "method": "tools/call",
     "params": {
-      "name": "extract_article",
+      "name": "fetch_markdown",
       "arguments": {
         "url": "https://example.com/blog/my-article",
-        "max_chars": 12000,
-        "include_metadata": true
+        "max_chars": 12000
       }
     }
   }'
@@ -229,16 +236,57 @@ Example structured output:
 ```json
 {
   "url": "https://example.com/blog/my-article",
+  "final_url": "https://example.com/blog/my-article",
   "title": "My Article",
-  "author": null,
-  "date": null,
+  "markdown": "# My Article\n\nClean readable content...\n\n- point one\n- point two",
+  "content_length": 842,
+  "truncated": false,
+  "extraction_method": "trafilatura",
+  "error": null
+}
+```
+
+### Call `extract_article`
+
+```bash
+curl -k -sS -X POST "https://localhost:8001/mcp/" \
+  -H "Authorization: Bearer change-me" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "tools/call",
+    "params": {
+      "name": "extract_article",
+      "arguments": {
+        "url": "https://example.com/blog/my-article",
+        "max_chars": 12000,
+        "include_metadata": true,
+        "include_markdown": true
+      }
+    }
+  }'
+```
+
+Example structured output:
+
+```json
+{
+  "url": "https://example.com/blog/my-article",
+  "final_url": "https://example.com/blog/my-article",
+  "title": "My Article",
+  "author": "Jane Doe",
+  "published_date": "2024-05-01T10:00:00Z",
   "description": "Short article description",
   "site_name": "Example",
   "language": "en",
   "text": "Clean readable article text...",
-  "text_length": 8452,
+  "markdown": "# My Article\n\nClean readable article text...",
+  "content_length": 8452,
   "truncated": false,
-  "extraction_method": "trafilatura"
+  "extraction_method": "trafilatura",
+  "error": null
 }
 ```
 
@@ -247,11 +295,92 @@ If extraction fails, the tool returns a structured error instead of crashing:
 ```json
 {
   "url": "https://example.com/article",
+  "final_url": "https://example.com/article",
   "error": "Could not extract readable article content from this page.",
   "text": null,
+  "markdown": null,
   "extraction_method": "trafilatura"
 }
 ```
+
+### Call `extract_metadata`
+
+```bash
+curl -k -sS -X POST "https://localhost:8001/mcp/" \
+  -H "Authorization: Bearer change-me" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "tools/call",
+    "params": {
+      "name": "extract_metadata",
+      "arguments": {"url": "https://example.com/blog/my-article"}
+    }
+  }'
+```
+
+Example structured output:
+
+```json
+{
+  "url": "https://example.com/blog/my-article",
+  "final_url": "https://example.com/blog/my-article",
+  "title": "My Article",
+  "description": "Short article description",
+  "author": "Jane Doe",
+  "published_date": "2024-05-01T10:00:00Z",
+  "site_name": "Example",
+  "language": "en",
+  "image": "https://example.com/images/cover.png",
+  "canonical_url": "https://example.com/blog/my-article",
+  "error": null
+}
+```
+
+### Call `summarize_article`
+
+```bash
+curl -k -sS -X POST "https://localhost:8001/mcp/" \
+  -H "Authorization: Bearer change-me" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "tools/call",
+    "params": {
+      "name": "summarize_article",
+      "arguments": {
+        "url": "https://example.com/blog/my-article",
+        "max_chars": 12000,
+        "max_words": 150
+      }
+    }
+  }'
+```
+
+Example structured output:
+
+```json
+{
+  "url": "https://example.com/blog/my-article",
+  "final_url": "https://example.com/blog/my-article",
+  "title": "My Article",
+  "author": "Jane Doe",
+  "published_date": "2024-05-01T10:00:00Z",
+  "description": "Short article description",
+  "text": "Clean readable article text...",
+  "content_length": 8452,
+  "truncated": false,
+  "summary_prompt": "Summarize My Article in at most 150 words. Focus on the key points...\n\nArticle content:\nClean readable article text...",
+  "extraction_method": "trafilatura",
+  "error": null
+}
+```
+
+The chat backend passes `summary_prompt` to its own LLM to generate the final summary.
 
 You can also connect with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector) using Streamable HTTP transport, the HTTPS URL above, and the same API key. You may need to accept the self-signed certificate in your client.
 
@@ -298,11 +427,13 @@ app/
   auth.py              API key middleware
   schemas.py           Response models
   tools/
-    website_reader.py  MCP tool registration
+    website_reader.py  MCP tool registration (all five tools)
   services/
-    fetcher.py         HTTP fetch + URL validation
-    extractor.py       HTML to readable text (BeautifulSoup, used by fetch_url)
-    article_extractor.py  Article extraction with trafilatura
+    fetcher.py             HTTP fetch + URL validation (SSRF checks)
+    extractor.py           HTML to readable text (BeautifulSoup, used by fetch_url)
+    markdown_extractor.py  HTML to Markdown (trafilatura + BeautifulSoup fallback)
+    metadata_extractor.py  Metadata (Open Graph, Twitter, JSON-LD, meta tags)
+    article_extractor.py   Article extraction and summary prompt preparation
 scripts/
   generate_dev_certs.sh  Create local self-signed TLS certs
   dev.sh                 Run uvicorn with HTTPS locally
@@ -310,13 +441,15 @@ tests/
   test_fetcher.py
   test_extractor.py
   test_extract_article.py
+  test_markdown.py
+  test_metadata.py
+  test_summarize.py
 ```
 
 ## Next steps
 
 Possible follow-ups:
 
-- add `fetch_markdown`
 - add domain allowlist or blocklist
 - add caching
 - add rate limiting
